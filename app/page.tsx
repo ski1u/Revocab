@@ -2,20 +2,23 @@
 
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { CornerDownRight, GripHorizontal } from 'lucide-react'
+import { Textarea } from '@/components/ui/textarea'
+import { CornerDownRight, GripHorizontal, Loader2, RotateCcw } from 'lucide-react'
 
 import { useLayoutEffect, useRef, useState } from 'react'
 
 interface Vocab {
   word: string,
   pronunciation: string,
-  definition: string
+  definition: string,
+  input: string
 }
 
 function Home() {
   const [input, setInput] = useState("")
   const [vocab, setVocab] = useState<Vocab | null>(null)
+  const [loading, setLoading] = useState<boolean>(false)
+  const lastRequestTime = useRef(0)
 
   const dragging = useRef(false)
   const offset = useRef({ x: 0, y: 0 })
@@ -45,26 +48,75 @@ function Home() {
     e.currentTarget.releasePointerCapture(e.pointerId)
   }
 
+  const RATE_LIMIT_MS = 3000
+
+  function isRateLimited() {
+    const now = Date.now()
+    if (now - lastRequestTime.current < RATE_LIMIT_MS) return true
+    lastRequestTime.current = now
+    return false
+  }
+
+  const canSend = input.trim().length > 2 && !loading
+  const canRotate = !!vocab && !loading
+
+  async function send(input: string) {
+    if (!canSend || isRateLimited()) return
+    setLoading(true)
+    const res = await fetch("http://localhost:8000/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: input })
+    }); const data = await res.json()
+
+    setVocab({ ...JSON.parse(data.reply), input })
+    setLoading(false)
+  }; async function rotate() { // Add to LLM history
+    if (!canRotate || isRateLimited()) return
+    setLoading(true)
+    const res = await fetch("http://localhost:8000/rotate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: vocab?.input, word: vocab?.word })
+    }); const data = await res.json()
+
+    setVocab({ ...JSON.parse(data.reply), input: vocab!.input })
+    setLoading(false)
+  }
+
   return (
     <div className='p-8'>
-      <div className='flex flex-col items-center justify-center'>
+      <div className='flex flex-col'>
         <h1
-          className='text-2xl font-bold tracking-tighter'>Revocab</h1>
+          className='text-3xl font-bold tracking-tighter'>Revocab</h1>
         <p
-          className='text-sm text-gray-500 w-2/3 text-center'
+          className='text-sm text-gray-500 w-2/3'
         >Learn vocab just by typing an ordinary word or defining a word. As simple as that.</p>
       </div>
 
-      {vocab && (
-        <div>
-          <h1>{vocab.word}</h1>
-          <p>{vocab.pronunciation}</p>
-          <p>{vocab.definition}</p>
+      {vocab ? (
+        <div className='mt-20 space-y-4 h-fit'>
+          <div>
+            <h1 className='font-semibold text-xl text-gray-700'>{vocab.word}</h1>
+            <p className='text-gray-400 italic text-sm'>{vocab.pronunciation}</p>
+          </div>
+          <p className='text-gray-500'>{vocab.definition}</p>
         </div>
+      ) : (
+        <div className='mt-20 space-y-8 h-fit'>
+        <div className='space-y-2'>
+          <div className='w-1/2 h-8 rounded-2xl bg-gray-600'></div>
+          <div className='w-1/3 h-4 rounded-2xl bg-gray-400'></div>
+        </div>
+        <div className='space-y-2'>
+          <div className='w-1/2 h-4 rounded-lg bg-gray-500'></div>
+          <div className='w-1/6 h-4 rounded-lg bg-gray-500'></div>
+        </div>
+      </div>
       )}
 
       <Card
-        className='fixed z-[11] flex items-center gap-2 p-2 shadow-lg'
+        className='fixed z-[11] flex items-center gap-2 p-2 shadow-lg w-64'
         style={{left: pos.x, top: pos.y}}
         ref={cardRef}
       >
@@ -74,17 +126,28 @@ function Home() {
           onPointerUp={onPointerUp}
           onPointerMove={onPointerMove}
         />
-        <div className='flex items-center gap-2'>
-          <Input
-              className='text-sm'
+        <div className='flex flex-col gap-2 w-full'>
+          <Textarea
+              className='text-sm w-full min-h-12 max-h-24'
               placeholder='Type or define a word'
               value={input}
               onChange={(e) => setInput(e.target.value)}
             />
-            <Button
-              size="icon"
-              onClick={() => {}} // setVocab, LLM API action
-            ><CornerDownRight/></Button>
+            <div className='flex w-full gap-1'>
+              <Button
+                className='w-2/3'
+                size="icon"
+                disabled={!canSend}
+                onClick={() => send(input)}
+              >{loading && !vocab ? <Loader2 className='animate-spin' /> : <CornerDownRight/>}</Button>
+              <Button
+                className='w-1/3'
+                size="icon"
+                variant="outline"
+                disabled={!canRotate}
+                onClick={() => rotate()}
+              >{loading && vocab ? <Loader2 className='animate-spin' /> : <RotateCcw/>}</Button>
+            </div>
         </div>
         </Card>
     </div>
