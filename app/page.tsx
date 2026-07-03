@@ -11,7 +11,7 @@ interface Vocab {
   word: string,
   pronunciation: string,
   definition: string,
-  input: string
+  input_from: string
 }
 
 function Home() {
@@ -60,7 +60,7 @@ function Home() {
   const canSend = input.trim().length > 2 && !loading
   const canRotate = !!vocab && !loading
 
-  async function send(input: string) {
+  async function send(input: string) { // SEND
     if (!canSend || isRateLimited()) return
     setLoading(true)
     const res = await fetch("http://localhost:8000/chat", {
@@ -69,18 +69,18 @@ function Home() {
       body: JSON.stringify({ message: input })
     }); const data = await res.json()
 
-    setVocab({ ...JSON.parse(data.reply), input })
+    setVocab({ ...JSON.parse(data.reply), input_from: input })
     setLoading(false)
-  }; async function rotate() { // Add to LLM history
+  }; async function rotate() { // ROTATE
     if (!canRotate || isRateLimited()) return
     setLoading(true)
     const res = await fetch("http://localhost:8000/rotate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input: vocab?.input, word: vocab?.word })
+      body: JSON.stringify({ word: vocab?.word, input_from: vocab?.input_from })
     }); const data = await res.json()
 
-    setVocab({ ...JSON.parse(data.reply), input: vocab!.input })
+    setVocab({ ...JSON.parse(data.reply), input_from: vocab!.input_from })
     setLoading(false)
   }
 
@@ -105,12 +105,12 @@ function Home() {
       ) : (
         <div className='mt-20 space-y-8 h-fit'>
         <div className='space-y-2'>
-          <div className='w-1/2 h-8 rounded-2xl bg-gray-600'></div>
-          <div className='w-1/3 h-4 rounded-2xl bg-gray-400'></div>
+          <div className='w-64 h-8 rounded-2xl bg-gray-600'></div>
+          <div className='w-32 h-4 rounded-2xl bg-gray-400'></div>
         </div>
         <div className='space-y-2'>
-          <div className='w-1/2 h-4 rounded-lg bg-gray-500'></div>
-          <div className='w-1/6 h-4 rounded-lg bg-gray-500'></div>
+          <div className='w-64 h-4 rounded-lg bg-gray-500'></div>
+          <div className='w-48 h-4 rounded-lg bg-gray-500'></div>
         </div>
       </div>
       )}
