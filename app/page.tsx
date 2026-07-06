@@ -4,8 +4,11 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { CornerDownRight, GripHorizontal, Loader2, RotateCcw } from 'lucide-react'
+import { toast } from 'sonner'
 
 import { useLayoutEffect, useRef, useState } from 'react'
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? ""
 
 interface Vocab {
   word?: string,
@@ -35,6 +38,7 @@ function Home() {
   const [loading, setLoading] = useState<boolean>(false)
   const [status, setStatus] = useState("")
   const lastRequestTime = useRef(0)
+  const history = useRef<string[]>([])   // words already shown, sent to /rotate as exclude
 
   const dragging = useRef(false)
   const offset = useRef({ x: 0, y: 0 })
@@ -77,22 +81,24 @@ function Home() {
 
   // ---
 
-  async function send(input: string) { // SEND
-    if (!canSend || isRateLimited()) return
-    setLoading(true)
-    setVocab(null)
-    setStatus("")
-    const res = await fetch("http://localhost:8000/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: input })
-    })
+  function errorMessage(e: unknown) {
+    return e instanceof Error ? e.message : "Something went wrong. Please try again."
+  }
+
+  // Consume an SSE vocab stream, rendering partials as they arrive.
+  // Returns the final word (for exclude tracking), or throws on error.
+  async function streamVocab(res: Response, inputFrom: string): Promise<string | undefined> {
+    if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      throw new Error(body?.detail ?? `Request failed (${res.status})`)
+    }
 
     const reader = res.body!.getReader()
     const decoder = new TextDecoder()
 
     let sseBuffer = ""    // incomplete SSE frames across reads
     let jsonBuffer = ""   // accumulated model text
+    let finalWord: string | undefined
 
     while (true) {
       const { done, value } = await reader.read()
@@ -106,29 +112,61 @@ function Home() {
         if (!frame.trim()) continue
         const event = JSON.parse(frame.replace(/^data:\s*/, ""))
 
+        if (event.error) throw new Error(event.error)
         if (event.status) setStatus(event.status)
         if (event.chunk) {
           jsonBuffer += event.chunk
           const partial = parsePartialVocab(jsonBuffer)
-          if (partial.word) setVocab({ ...partial, input_from: input })
+          if (partial.word) setVocab({ ...partial, input_from: inputFrom })
         }
-        if (event.done) setVocab({ ...JSON.parse(event.reply), input_from: input })
+        if (event.done) {
+          const parsed = JSON.parse(event.reply)
+          finalWord = parsed.word
+          setVocab({ ...parsed, input_from: inputFrom })
+        }
       }
     }
-    setLoading(false)
+    return finalWord
   }
-  
+
+  async function send(input: string) { // SEND
+    if (!canSend || isRateLimited()) return
+    setLoading(true)
+    setVocab(null)
+    setStatus("")
+    try {
+      const res = await fetch(`${API_BASE}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: input })
+      })
+      const word = await streamVocab(res, input)
+      history.current = word ? [word] : []   // start a fresh exclude list
+    } catch (e) {
+      toast.error(errorMessage(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
   async function rotate() { // ROTATE
     if (!canRotate || isRateLimited()) return
+    const inputFrom = vocab!.input_from
     setLoading(true)
-    const res = await fetch("http://localhost:8000/rotate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ word: vocab?.word, input_from: vocab?.input_from })
-    }); const data = await res.json()
-
-    setVocab({ ...JSON.parse(data.reply), input_from: vocab!.input_from })
-    setLoading(false)
+    setStatus("")
+    try {
+      const res = await fetch(`${API_BASE}/api/rotate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word: vocab?.word, input_from: inputFrom, exclude: history.current })
+      })
+      const word = await streamVocab(res, inputFrom)
+      if (word) history.current = [...history.current, word]   // remember it to exclude next time
+    } catch (e) {
+      toast.error(errorMessage(e))
+    } finally {
+      setLoading(false)
+    }
   }
 
   // ---
