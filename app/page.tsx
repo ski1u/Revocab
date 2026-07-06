@@ -8,16 +8,32 @@ import { CornerDownRight, GripHorizontal, Loader2, RotateCcw } from 'lucide-reac
 import { useLayoutEffect, useRef, useState } from 'react'
 
 interface Vocab {
-  word: string,
-  pronunciation: string,
-  definition: string,
+  word?: string,
+  pronunciation?: string,
+  definition?: string,
   input_from: string
+}
+
+// Tolerantly pull each string field out of still-streaming JSON, even before
+// the closing quote has arrived. Keeps up as the model emits the answer.
+function parsePartialVocab(buf: string): Partial<Vocab> {
+  const grab = (key: string) => {
+    const m = buf.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`))
+    if (!m) return undefined
+    try { return JSON.parse(`"${m[1]}"`) } catch { return m[1] }
+  }
+  const out: Partial<Vocab> = {}
+  const w = grab("word");          if (w !== undefined) out.word = w
+  const p = grab("pronunciation"); if (p !== undefined) out.pronunciation = p
+  const d = grab("definition");    if (d !== undefined) out.definition = d
+  return out
 }
 
 function Home() {
   const [input, setInput] = useState("")
   const [vocab, setVocab] = useState<Vocab | null>(null)
   const [loading, setLoading] = useState<boolean>(false)
+  const [status, setStatus] = useState("")
   const lastRequestTime = useRef(0)
 
   const dragging = useRef(false)
@@ -53,25 +69,56 @@ function Home() {
   function isRateLimited() {
     const now = Date.now()
     if (now - lastRequestTime.current < RATE_LIMIT_MS) return true
-    lastRequestTime.current = now
-    return false
+    lastRequestTime.current = now; return false
   }
 
   const canSend = input.trim().length > 2 && !loading
   const canRotate = !!vocab && !loading
 
+  // ---
+
   async function send(input: string) { // SEND
     if (!canSend || isRateLimited()) return
     setLoading(true)
+    setVocab(null)
+    setStatus("")
     const res = await fetch("http://localhost:8000/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: input })
-    }); const data = await res.json()
+    })
 
-    setVocab({ ...JSON.parse(data.reply), input_from: input })
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+
+    let sseBuffer = ""    // incomplete SSE frames across reads
+    let jsonBuffer = ""   // accumulated model text
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      sseBuffer += decoder.decode(value, { stream: true })
+
+      const frames = sseBuffer.split("\n\n")
+      sseBuffer = frames.pop() ?? ""          // keep trailing partial frame
+
+      for (const frame of frames) {
+        if (!frame.trim()) continue
+        const event = JSON.parse(frame.replace(/^data:\s*/, ""))
+
+        if (event.status) setStatus(event.status)
+        if (event.chunk) {
+          jsonBuffer += event.chunk
+          const partial = parsePartialVocab(jsonBuffer)
+          if (partial.word) setVocab({ ...partial, input_from: input })
+        }
+        if (event.done) setVocab({ ...JSON.parse(event.reply), input_from: input })
+      }
+    }
     setLoading(false)
-  }; async function rotate() { // ROTATE
+  }
+  
+  async function rotate() { // ROTATE
     if (!canRotate || isRateLimited()) return
     setLoading(true)
     const res = await fetch("http://localhost:8000/rotate", {
@@ -84,6 +131,8 @@ function Home() {
     setLoading(false)
   }
 
+  // ---
+
   return (
     <div className='p-8'>
       <div className='flex flex-col'>
@@ -95,16 +144,17 @@ function Home() {
       </div>
 
       {vocab ? (
-        <div className='mt-20 space-y-4 h-fit'>
-          <div>
-            <h1 className='font-semibold text-xl text-gray-700'>{vocab.word}</h1>
-            <p className='text-gray-400 italic text-sm'>{vocab.pronunciation}</p>
-          </div>
-          <p className='text-gray-500'>{vocab.definition}</p>
+      <div className='mt-20 space-y-4 h-fit'>
+        <div>
+          <h1 className='font-semibold text-xl text-gray-700'>{vocab.word}</h1>
+          <p className='text-gray-400 italic text-sm'>{vocab.pronunciation}</p>
         </div>
+        <p className='text-gray-500'>{vocab.definition}</p>
+      </div>
       ) : (
-        <div className='mt-20 space-y-8 h-fit'>
+      <div className='mt-20 space-y-8 h-fit'>
         <div className='space-y-2'>
+          {loading && <p className='text-sm'>{status}</p>}
           <div className='w-64 h-8 rounded-2xl bg-gray-600'></div>
           <div className='w-32 h-4 rounded-2xl bg-gray-400'></div>
         </div>
@@ -116,7 +166,7 @@ function Home() {
       )}
 
       <Card
-        className='fixed z-[11] flex items-center gap-2 p-2 shadow-lg w-64'
+        className='fixed z-11 flex items-center gap-2 p-2 shadow-lg w-64'
         style={{left: pos.x, top: pos.y}}
         ref={cardRef}
       >
